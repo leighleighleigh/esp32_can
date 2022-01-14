@@ -32,7 +32,6 @@
 #include "SPI.h"
 #include "mcp2515.h"
 #include "mcp2515_defs.h"
-#include "esp32_can.h"
 
 SPISettings mcpSPISettings(8000000, MSBFIRST, SPI_MODE0);
 
@@ -116,7 +115,7 @@ MCP2515::MCP2515(uint8_t CS_Pin, uint8_t INT_Pin) : CAN_COMMON(6) {
   _INT = INT_Pin;
   
   savedBaud = 0;
-  savedFreq = 16;
+  savedFreq = 0;
   running = 0; 
   inhibitTransactions = false;
   initializedResources = false;
@@ -126,13 +125,13 @@ void MCP2515::initializeResources()
 {
   if (initializedResources) return;
 
-  rxQueue = xQueueCreate(MCP_RX_BUFFER_SIZE, sizeof(CAN_FRAME));
-  txQueue = xQueueCreate(MCP_TX_BUFFER_SIZE, sizeof(CAN_FRAME));
+  rxQueue = xQueueCreate(RX_BUFFER_SIZE, sizeof(CAN_FRAME));
+  txQueue = xQueueCreate(TX_BUFFER_SIZE, sizeof(CAN_FRAME));
   callbackQueueM15 = xQueueCreate(16, sizeof(CAN_FRAME));
 
                             //func        desc    stack, params, priority, handle to task, core to pin to
-  xTaskCreatePinnedToCore(&task_MCP15, "CAN_RX_M15", 4096, this, 3, NULL, 0);
-  xTaskCreatePinnedToCore(&task_MCPInt15, "CAN_INT_M15", 4096, this, 10, &intDelegateTask, 0);
+  xTaskCreatePinnedToCore(&task_MCP15, "CAN_RX_M15", 2048, this, 3, NULL, 0);
+  xTaskCreatePinnedToCore(&task_MCPInt15, "CAN_INT_M15", 2048, this, 10, &intDelegateTask, 0);
 
   initializedResources = true;
 }
@@ -381,11 +380,7 @@ int MCP2515::_setFilter(uint32_t id, uint32_t mask, bool extended)
 
     for (int i = 0; i < 6; i++)
     {
-        if (i < 3)
-            GetRXFilter(FILTER0 + (i * 4), filterVal, isExtended);
-        else
-            GetRXFilter(FILTER3 + ((i-3) * 4), filterVal, isExtended);
-
+        GetRXFilter(i, filterVal, isExtended);
         if (filterVal == 0 && isExtended == extended) //empty filter. Let's fill it and leave
         {
             if (i < 2)
@@ -436,23 +431,21 @@ int MCP2515::_setFilterSpecific(uint8_t mailbox, uint32_t id, uint32_t mask, boo
         SetRXFilter(FILTER0 + (mailbox * 4), id, extended);
     else
         SetRXFilter(FILTER3 + ((mailbox-3) * 4), id, extended);
-
-    return mailbox;
 }
 
 uint32_t MCP2515::init(uint32_t ul_baudrate)
 {
-    return Init(ul_baudrate, savedFreq);
+    Init(ul_baudrate, 16);
 }
 
 uint32_t MCP2515::beginAutoSpeed()
 {
-    return Init(0, savedFreq);
+    Init(0, 16);
 }
 
 uint32_t MCP2515::set_baudrate(uint32_t ul_baudrate)
 {
-    return Init(ul_baudrate, savedFreq);
+    Init(ul_baudrate, 16);
 }
 
 void MCP2515::setListenOnlyMode(bool state)
@@ -460,29 +453,6 @@ void MCP2515::setListenOnlyMode(bool state)
     if (state)
         Mode(MODE_LISTEN);
     else Mode(MODE_NORMAL);
-}
-
-void MCP2515::setBuffer0RolloverBUKT(bool enable) {
-    const byte oldMode = Read(CANSTAT);
-
-    if (oldMode != MODE_CONFIG) {
-        if (!Mode(MODE_CONFIG)) {
-            Serial.println("Unable to change to config mode to set BUKT");
-            return;
-        }
-    }
-
-    byte oldValue = Read(RXB0CTRL);
-
-    if (enable) {
-        Write(RXB0CTRL, oldValue | RXB0BUKT);
-    } else {
-        Write(RXB0CTRL, oldValue & ~RXB0BUKT);
-    }
-
-    if (oldMode != MODE_CONFIG) {
-        Mode(oldMode);
-    }
 }
 
 void MCP2515::enable()
@@ -498,7 +468,6 @@ void MCP2515::disable()
 bool MCP2515::sendFrame(CAN_FRAME& txFrame)
 {
     EnqueueTX(txFrame);
-    return true;
 }
 
 bool MCP2515::rx_avail()
